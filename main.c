@@ -1,10 +1,14 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <ctype.h>
 #include <unistd.h>
 #include <string.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
 #include <dirent.h>
 
 #define PORT "8080"
@@ -12,12 +16,14 @@
 #define MAX_REQUEST_LEN 8192
 #define MAX_RESPONSE_LEN 65536
 
-#define add_to_resp(__STR) do {strcat(response, __STR);} while(0)
+#define add_str_to_resp(__STR) do{ strcpy(response + strlen(response), __STR); } while(0)
 
 
 ssize_t sendall(int socket, const void *buffer, size_t length, int flags);
-int handle_get(int sockfd, char *request, ssize_t len, char *base_dir);
+int handle_get(int sockfd, char *request, ssize_t request_len, char *base_dir);
 void urldecode(char *dst, const char *src);
+int dir_only(const struct dirent *ent);
+int reg_only(const struct dirent *ent);
 
 
 int main(int argc, char **argv) {
@@ -186,7 +192,7 @@ ssize_t sendall(int socket, const void *buffer, size_t length, int flags) {
 }
 
 
-int handle_get(int sockfd, char *request, ssize_t len, char *base_dir) {
+int handle_get(int sockfd, char *request, ssize_t request_len, char *base_dir) {
     char *response = malloc(MAX_RESPONSE_LEN);
     if (!response) goto handle_error;
 
@@ -207,63 +213,86 @@ int handle_get(int sockfd, char *request, ssize_t len, char *base_dir) {
     rel_dir_url[rel_len] = '\0';
     char *rel_dir = malloc(rel_len+1);
     urldecode(rel_dir, rel_dir_url);
+    free(rel_dir_url);
 
     char *full_dir = malloc(base_len+rel_len+1);
     memcpy(full_dir, base_dir, base_len);
     memcpy(full_dir+base_len, rel_dir, rel_len);
     full_dir[base_len+rel_len] = '\0';
 
-    add_to_resp("<html>\r\n");
 
-    add_to_resp("<head>\r\n");
-    add_to_resp("<meta charset=\"utf-8\">\r\n");
-    add_to_resp("<meta http-equiv=\"x-ua-compatible\" content=\"ie=edge\">\r\n");
-    add_to_resp("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, shrink-to-fit=no\">\r\n");
-    add_to_resp("<title>[imp] ");
-    add_to_resp(rel_dir);
-    add_to_resp("/</title>\r\n");
-    add_to_resp("<link href=\"https://cdn.bootcss.com/mini.css/2.3.7/mini-default.css\" rel=\"stylesheet\">\r\n");
-    add_to_resp("<style>ul {list-style-type: none;}</style>\r\n");
-    add_to_resp("</head>\r\n");
-
-    add_to_resp("<body>\r\n");
-
-    add_to_resp("<div class=\"container\">\r\n");
-    add_to_resp("<h1 style=\"text-align: center\">");
-    add_to_resp(full_dir);
-    add_to_resp("</h1>\r\n");
-
-    add_to_resp("<div class=\"col-sm-4 col-sm-offset-4\">\r\n");
+    add_str_to_resp("<h1>");
+    add_str_to_resp(full_dir);
+    add_str_to_resp("</h1>\r\n");
 
     puts(rel_dir);
     puts(full_dir);
-    DIR *dir = opendir(full_dir);
-    if (dir == NULL) goto handle_error;
 
-    add_to_resp("<ul>");
-    struct dirent *ent;
-    while ((ent = readdir(dir)) != NULL) {
-        add_to_resp("<li><a href=\"");
-        add_to_resp(rel_dir);
-        if (strcmp(rel_dir, "/") != 0) {
-            add_to_resp("/");
-        }
-        add_to_resp(ent->d_name);
-        add_to_resp("\">");
-        add_to_resp(ent->d_name);
-        add_to_resp("</a></li>\r\n");
+    int rv;
+    struct stat buf;
+    rv = stat(full_dir, &buf);
+    if (rv) {
+        goto handle_error;
     }
-    closedir(dir);
 
-    free(rel_dir_url);
+    if (buf.st_mode & S_IFDIR) {
+        struct dirent **dir_list, **reg_list;
+        int dir_count = scandir(full_dir, &dir_list, dir_only, alphasort);
+        int reg_count = scandir(full_dir, &reg_list, reg_only, alphasort);
+
+        if (dir_count < 0 && reg_count < 0) {
+            goto handle_error;
+        }
+
+        add_str_to_resp("<ul>");
+
+        bool root = !strcmp(rel_dir, "/");
+
+        size_t i;
+        for (i = 0; i<dir_count; i++) {
+            add_str_to_resp("<li><a href=\"");
+            add_str_to_resp(rel_dir);
+            if (!root) {
+                add_str_to_resp("/");
+            }
+            add_str_to_resp(dir_list[i]->d_name);
+            add_str_to_resp("\">");
+            add_str_to_resp(dir_list[i]->d_name);
+            add_str_to_resp("/");
+            add_str_to_resp("</a></li>\r\n");
+        }
+        free(dir_list);
+
+        for (i=0; i<reg_count; i++) {
+            add_str_to_resp("<li><a href=\"");
+            add_str_to_resp(rel_dir);
+            if (!root) {
+                add_str_to_resp("/");
+            }
+            add_str_to_resp(reg_list[i]->d_name);
+            add_str_to_resp("\">");
+            add_str_to_resp(reg_list[i]->d_name);
+            add_str_to_resp("</a></li>\r\n");
+        }
+        free(reg_list);
+
+        add_str_to_resp("</ul>\r\n");
+    } else if (buf.st_mode & S_IFREG) {
+        FILE *fp = fopen(full_dir, "r");
+        char *line = NULL;
+        size_t linecap = 0;
+        ssize_t linelen;
+        do {
+            linelen = getline(&line, &linecap, fp);
+            add_str_to_resp(line);
+            add_str_to_resp("<br>");
+        } while (linelen > 0);
+        fclose(fp);
+    }
+
     free(rel_dir);
     free(full_dir);
-    add_to_resp("</ul>");
 
-    add_to_resp("</div>\r\n");
-    add_to_resp("</div>\r\n");
-    add_to_resp("</body>\r\n");
-    add_to_resp("</html>\r\n");
 
     ssize_t send_status = 0;
 
@@ -332,4 +361,12 @@ void urldecode(char *dst, const char *src)
         }
     }
     *dst = '\0';
+}
+
+int dir_only(const struct dirent *ent) {
+    return ent->d_type == DT_DIR;
+}
+
+int reg_only(const struct dirent *ent) {
+    return ent->d_type == DT_REG;
 }
