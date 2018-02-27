@@ -11,6 +11,9 @@
 #include <sys/stat.h>
 #include <dirent.h>
 
+#include "ImpConfig.h"
+#include "httplib.h"
+
 #define PORT "8080"
 #define BACKLOG 10
 #define MAX_REQUEST_LEN 8192
@@ -27,6 +30,8 @@ int reg_only(const struct dirent *ent);
 
 
 int main(int argc, char **argv) {
+    printf("imp version %d.%d\n", IMP_VERSION_MAJOR, IMP_VERSION_MINOR);
+
     if (argc != 2) {
         fprintf(stderr, "Usage: imp <directory_prefix>\n");
         exit(2);
@@ -154,6 +159,7 @@ int main(int argc, char **argv) {
                     } else {
                         char *request = malloc(MAX_REQUEST_LEN);
                         ssize_t request_len = recv(i, request, MAX_REQUEST_LEN, 0);
+                        request[request_len] = '\0';
                         if (request_len <= 0) {
                             if (request_len == 0) {
                                 printf("imp: connection dropped by client %d\n", i);
@@ -164,11 +170,13 @@ int main(int argc, char **argv) {
                             FD_CLR(i, &master);
                             continue;
                         } else {
+                            Request *req = parse_request(request);
                             rv = handle_get(i, request, request_len, base_dir);
                             if (rv == -1) {
                                 perror("imp: handle_get");
                                 continue;
                             }
+                            free_request(req);
                         }
                         free(request);
                     }
