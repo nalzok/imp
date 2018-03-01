@@ -1,1 +1,1 @@
-add_library(httplib httplib.h rqst.c)
+add_library(httplib rqst.c)

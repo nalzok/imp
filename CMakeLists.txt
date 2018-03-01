@@ -12,7 +12,7 @@ include_directories("${PROJECT_BINARY_DIR}")
 
 add_subdirectory(httplib)
 include_directories("${PROJECT_SOURCE_DIR}/httplib")
-add_executable(httplib_test httplib/httplib_test.c)
+add_executable(httplib_test httplib/tests/httplib_test.c)
 target_link_libraries(httplib_test httplib cmocka)
 
 
